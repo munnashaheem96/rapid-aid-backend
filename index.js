@@ -7,8 +7,8 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// 🔥 ADD YOUR SERVICE ACCOUNT FILE
-const serviceAccount = require("./serviceAccountKey.json");
+// 🔥 USE ENV VARIABLE (RENDER)
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -78,4 +78,6 @@ app.post("/send-alert", async (req, res) => {
   }
 });
 
-app.listen(3000, () => console.log("Server running"));
+// 🔥 IMPORTANT FOR RENDER (PORT FIX)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
