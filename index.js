@@ -16,9 +16,9 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// 📍 DISTANCE FUNCTION
+// 📍 DISTANCE FUNCTION (HAVERSINE)
 function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371;
+  const R = 6371; // km
 
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -39,60 +39,88 @@ app.post("/send-alert", async (req, res) => {
 
     console.log("🔥 New request:", request);
 
+    // 🔥 VALIDATION
+    if (!request.lat || !request.lng || !request.bloodGroup) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
     const usersSnapshot = await db.collection("users").get();
 
     let sent = 0;
 
-    for (const doc of usersSnapshot.docs) {
-      const user = doc.data();
+    // 🔥 EXPANDING RADIUS
+    const radiusLevels = [20, 30, 40, 50];
 
-      // ❌ skip invalid users
-      if (!user.fcmToken) continue;
-      if (!user.lat || !user.lng) continue;
+    // 🔥 PREVENT DUPLICATES
+    const notifiedUsers = new Set();
 
-      // 🩸 blood match
-      if (user.bloodGroup !== request.bloodGroup) continue;
+    for (let radius of radiusLevels) {
+      console.log(`🔍 Searching within ${radius} km`);
 
-      // 📍 distance check
-      const distance = getDistance(
-        user.lat,
-        user.lng,
-        request.lat,
-        request.lng
-      );
+      for (const doc of usersSnapshot.docs) {
+        const user = doc.data();
 
-      if (distance > 20) continue;
+        // ❌ skip invalid users
+        if (!user.fcmToken) continue;
+        if (!user.lat || !user.lng) continue;
 
-      console.log(
-        `📤 Sending to ${doc.id} (${distance.toFixed(2)} km)`
-      );
+        // ❌ skip already notified
+        if (notifiedUsers.has(doc.id)) continue;
 
-      // 🔔 SEND NOTIFICATION
-      await admin.messaging().send({
-        token: user.fcmToken,
+        // 🩸 blood match
+        if (user.bloodGroup !== request.bloodGroup) continue;
 
-        notification: {
-          title: "🚨 Emergency Blood Request",
-          body: `${request.bloodGroup} needed near ${request.location}`,
-        },
+        // 📍 distance
+        const distance = getDistance(
+          user.lat,
+          user.lng,
+          request.lat,
+          request.lng
+        );
 
-        android: {
-          priority: "high",
-          notification: {
-            sound: "default",
-            channelId: "emergency_channel",
-            clickAction: "FLUTTER_NOTIFICATION_CLICK",
-          },
-        },
+        if (distance > radius) continue;
 
-        data: {
-          bloodGroup: request.bloodGroup,
-          location: request.location,
-          phone: request.phone || "9999999999", // 📞 PASS PHONE
-        },
-      });
+        console.log(
+          `📤 Sending to ${doc.id} (${distance.toFixed(2)} km)`
+        );
 
-      sent++;
+        try {
+          await admin.messaging().send({
+            token: user.fcmToken,
+
+            notification: {
+              title: "🚨 Emergency Blood Request",
+              body: `${request.bloodGroup} needed near ${request.location}`,
+            },
+
+            android: {
+              priority: "high",
+              notification: {
+                sound: "default",
+                channelId: "emergency_channel",
+                clickAction: "FLUTTER_NOTIFICATION_CLICK",
+              },
+            },
+
+            data: {
+              bloodGroup: request.bloodGroup || "Unknown",
+              location: request.location || "Nearby",
+              phone: request.phone || "9999999999",
+            },
+          });
+
+          notifiedUsers.add(doc.id);
+          sent++;
+        } catch (err) {
+          console.error(`❌ Failed for ${doc.id}:`, err.message);
+        }
+      }
+
+      // 🔥 STOP if we found users
+      if (sent > 0) {
+        console.log(`✅ Found users within ${radius} km`);
+        break;
+      }
     }
 
     console.log(`✅ Total notifications sent: ${sent}`);
@@ -109,7 +137,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Rapid Aid Backend Running");
 });
 
-// 🔥 RENDER PORT
+// 🔥 PORT
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`🚀 Server running on ${PORT}`)
