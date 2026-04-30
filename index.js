@@ -7,7 +7,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔥 FIREBASE INIT (Render/Env: FIREBASE_KEY must be a JSON string)
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -16,9 +15,9 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/// 📍 DISTANCE (HAVERSINE)
+/// 📍 DISTANCE
 function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // km
+  const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
 
@@ -31,96 +30,61 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-/// 🚨 MAIN ALERT API
 app.post("/send-alert", async (req, res) => {
   try {
     const request = req.body;
 
-    console.log("🔥 New request:", request);
-
-    // ✅ VALIDATION
-    if (!request.lat || !request.lng || !request.bloodGroup) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
+    console.log("🔥 Request:", request);
 
     const usersSnapshot = await db.collection("users").get();
 
     let sent = 0;
 
-    // 🔥 expanding radius
-    const radiusLevels = [20, 30, 40, 50, 60, 70, 80];
+    for (const doc of usersSnapshot.docs) {
+      const user = doc.data();
 
-    const notifiedUsers = new Set();
+      const hasToken = !!user.fcmToken;
+      const hasLocation = user.lat != null && user.lng != null;
+      const bloodMatch = user.bloodGroup === request.bloodGroup;
 
-    for (let radius of radiusLevels) {
-      console.log(`🔍 Searching within ${radius} km`);
+      console.log(doc.id, { hasToken, hasLocation, bloodMatch });
 
-      for (const doc of usersSnapshot.docs) {
-        const user = doc.data();
+      if (!hasToken || !hasLocation) continue;
+      if (!bloodMatch) continue;
 
-        // ❌ skip invalid
-        if (!user.fcmToken) continue;
-        if (user.lat == null || user.lng == null) continue;
-        if (notifiedUsers.has(doc.id)) continue;
+      const distance = getDistance(
+        user.lat,
+        user.lng,
+        request.lat,
+        request.lng
+      );
 
-        // 🩸 blood match
-        if (user.bloodGroup !== request.bloodGroup) continue;
+      if (distance > 50) continue;
 
-        // 📍 distance
-        const distance = getDistance(
-          user.lat,
-          user.lng,
-          request.lat,
-          request.lng
-        );
+      try {
+        await admin.messaging().send({
+          token: user.fcmToken,
+          data: {
+            bloodGroup: request.bloodGroup,
+            location: request.location,
+            phone: request.phone || "9999999999",
+          },
+          android: { priority: "high" },
+        });
 
-        if (distance > radius) continue;
-
-        console.log(
-          `📤 Sending to ${doc.id} (${distance.toFixed(2)} km)`
-        );
-
-        try {
-          // ✅ DATA-ONLY PAYLOAD (important for your Flutter code)
-          await admin.messaging().send({
-            token: user.fcmToken,
-            data: {
-              bloodGroup: String(request.bloodGroup ?? "Unknown"),
-              location: String(request.location ?? "Nearby"),
-              phone: String(request.phone ?? "9999999999"),
-            },
-            android: {
-              priority: "high",
-            },
-          });
-
-          notifiedUsers.add(doc.id);
-          sent++;
-        } catch (err) {
-          console.error(`❌ Failed for ${doc.id}:`, err.message);
-        }
-      }
-
-      if (sent > 0) {
-        console.log(`✅ Found users within ${radius} km`);
-        break;
+        console.log(`✅ Sent to ${doc.id}`);
+        sent++;
+      } catch (e) {
+        console.log(`❌ Failed ${doc.id}`, e.message);
       }
     }
 
-    console.log(`✅ Total notifications sent: ${sent}`);
-
+    console.log("TOTAL SENT:", sent);
     res.json({ success: true, sent });
-  } catch (err) {
-    console.error("❌ Error:", err);
-    res.status(500).send("Error sending alerts");
+  } catch (e) {
+    console.log(e);
+    res.status(500).send("Error");
   }
 });
 
-app.get("/", (req, res) => {
-  res.send("🚀 Rapid Aid Backend Running");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`🚀 Server running on ${PORT}`)
-);
+app.listen(3000, () => console.log("🚀 Server running"));
