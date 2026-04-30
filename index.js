@@ -1,13 +1,13 @@
+// server.js
 const express = require("express");
 const admin = require("firebase-admin");
-const bodyParser = require("body-parser");
 const cors = require("cors");
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
-// 🔥 FIREBASE INIT
+// 🔥 FIREBASE INIT (Render/Env: FIREBASE_KEY must be a JSON string)
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -16,10 +16,9 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// 📍 DISTANCE FUNCTION (HAVERSINE)
+/// 📍 DISTANCE (HAVERSINE)
 function getDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // km
-
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
 
@@ -32,14 +31,14 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-// 🚨 MAIN ALERT API
+/// 🚨 MAIN ALERT API
 app.post("/send-alert", async (req, res) => {
   try {
     const request = req.body;
 
     console.log("🔥 New request:", request);
 
-    // 🔥 VALIDATION
+    // ✅ VALIDATION
     if (!request.lat || !request.lng || !request.bloodGroup) {
       return res.status(400).json({ error: "Missing required fields" });
     }
@@ -48,10 +47,9 @@ app.post("/send-alert", async (req, res) => {
 
     let sent = 0;
 
-    // 🔥 EXPANDING RADIUS
-    const radiusLevels = [20, 30, 40, 50];
+    // 🔥 expanding radius
+    const radiusLevels = [20, 30, 40, 50, 60, 70, 80];
 
-    // 🔥 PREVENT DUPLICATES
     const notifiedUsers = new Set();
 
     for (let radius of radiusLevels) {
@@ -60,11 +58,9 @@ app.post("/send-alert", async (req, res) => {
       for (const doc of usersSnapshot.docs) {
         const user = doc.data();
 
-        // ❌ skip invalid users
+        // ❌ skip invalid
         if (!user.fcmToken) continue;
-        if (!user.lat || !user.lng) continue;
-
-        // ❌ skip already notified
+        if (user.lat == null || user.lng == null) continue;
         if (notifiedUsers.has(doc.id)) continue;
 
         // 🩸 blood match
@@ -85,27 +81,16 @@ app.post("/send-alert", async (req, res) => {
         );
 
         try {
+          // ✅ DATA-ONLY PAYLOAD (important for your Flutter code)
           await admin.messaging().send({
             token: user.fcmToken,
-
-            notification: {
-              title: "🚨 Emergency Blood Request",
-              body: `${request.bloodGroup} needed near ${request.location}`,
+            data: {
+              bloodGroup: String(request.bloodGroup ?? "Unknown"),
+              location: String(request.location ?? "Nearby"),
+              phone: String(request.phone ?? "9999999999"),
             },
-
             android: {
               priority: "high",
-              notification: {
-                sound: "default",
-                channelId: "emergency_channel",
-                clickAction: "FLUTTER_NOTIFICATION_CLICK",
-              },
-            },
-
-            data: {
-              bloodGroup: request.bloodGroup || "Unknown",
-              location: request.location || "Nearby",
-              phone: request.phone || "9999999999",
             },
           });
 
@@ -116,7 +101,6 @@ app.post("/send-alert", async (req, res) => {
         }
       }
 
-      // 🔥 STOP if we found users
       if (sent > 0) {
         console.log(`✅ Found users within ${radius} km`);
         break;
@@ -132,12 +116,10 @@ app.post("/send-alert", async (req, res) => {
   }
 });
 
-// 🌐 ROOT CHECK
 app.get("/", (req, res) => {
   res.send("🚀 Rapid Aid Backend Running");
 });
 
-// 🔥 PORT
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`🚀 Server running on ${PORT}`)
