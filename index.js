@@ -1,4 +1,4 @@
-// server.js
+// index.js
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -7,6 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// 🔥 Firebase init (FIREBASE_KEY = JSON string in env)
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -15,7 +16,7 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/// 📍 DISTANCE
+/// 📍 HAVERSINE DISTANCE (km)
 function getDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -33,58 +34,88 @@ function getDistance(lat1, lon1, lat2, lon2) {
 app.post("/send-alert", async (req, res) => {
   try {
     const request = req.body;
+    console.log("🔥 Incoming request:", request);
 
-    console.log("🔥 Request:", request);
+    if (!request.lat || !request.lng || !request.bloodGroup) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
-    const usersSnapshot = await db.collection("users").get();
+    const usersSnap = await db.collection("users").get();
 
-    let sent = 0;
+    const tokens = [];
+    const userDocIds = [];
 
-    for (const doc of usersSnapshot.docs) {
-      const user = doc.data();
+    for (const doc of usersSnap.docs) {
+      const u = doc.data();
 
-      const hasToken = !!user.fcmToken;
-      const hasLocation = user.lat != null && user.lng != null;
-      const bloodMatch = user.bloodGroup === request.bloodGroup;
-
-      console.log(doc.id, { hasToken, hasLocation, bloodMatch });
+      const hasToken = !!u.fcmToken;
+      const hasLocation = u.lat != null && u.lng != null;
+      const bloodMatch = u.bloodGroup === request.bloodGroup;
 
       if (!hasToken || !hasLocation) continue;
       if (!bloodMatch) continue;
 
-      const distance = getDistance(
-        user.lat,
-        user.lng,
-        request.lat,
-        request.lng
-      );
+      const distance = getDistance(u.lat, u.lng, request.lat, request.lng);
+      if (distance > 50) continue; // 🔧 adjust radius as needed
 
-      if (distance > 50) continue;
-
-      try {
-        await admin.messaging().send({
-          token: user.fcmToken,
-          data: {
-            bloodGroup: request.bloodGroup,
-            location: request.location,
-            phone: request.phone || "9999999999",
-          },
-          android: { priority: "high" },
-        });
-
-        console.log(`✅ Sent to ${doc.id}`);
-        sent++;
-      } catch (e) {
-        console.log(`❌ Failed ${doc.id}`, e.message);
-      }
+      tokens.push(u.fcmToken);
+      userDocIds.push(doc.id);
     }
 
-    console.log("TOTAL SENT:", sent);
-    res.json({ success: true, sent });
+    if (tokens.length === 0) {
+      console.log("⚠️ No eligible users found");
+      return res.json({ success: true, sent: 0 });
+    }
+
+    console.log("📤 Sending to tokens:", tokens.length);
+
+    const response = await admin.messaging().sendEachForMulticast({
+      tokens,
+      data: {
+        bloodGroup: String(request.bloodGroup),
+        location: String(request.location ?? "Nearby"),
+        phone: String(request.phone ?? "9999999999"),
+      },
+      android: { priority: "high" },
+    });
+
+    let success = 0;
+    const invalidDocIds = [];
+
+    response.responses.forEach((r, idx) => {
+      if (r.success) {
+        success++;
+      } else {
+        const code = r.error?.code;
+        console.log("❌ Error for token:", code);
+
+        if (
+          code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token"
+        ) {
+          invalidDocIds.push(userDocIds[idx]);
+        }
+      }
+    });
+
+    // 🔥 CLEAN INVALID TOKENS
+    for (const docId of invalidDocIds) {
+      console.log("🧹 Removing invalid token for:", docId);
+      await db.collection("users").doc(docId).update({
+        fcmToken: admin.firestore.FieldValue.delete(),
+      });
+    }
+
+    console.log(`✅ Sent: ${success}/${tokens.length}`);
+
+    res.json({ success: true, sent: success });
   } catch (e) {
-    console.log(e);
-    res.status(500).send("Error");
+    console.error("❌ Server error:", e);
+    res.status(500).send("Error sending alerts");
   }
 });
 
-app.listen(3000, () => console.log("🚀 Server running"));
+app.get("/", (_, res) => res.send("🚀 Rapid Aid Backend Running"));
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log("🚀 Server running on", PORT));
